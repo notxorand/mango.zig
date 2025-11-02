@@ -1,4 +1,4 @@
-# mango.zig
+# mango.zig 🥭
 
 [![Brainmade](https://brainmade.org/black-logo.svg)](https://brainmade.org)
 
