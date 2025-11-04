@@ -1,35 +1,35 @@
 const std = @import("std");
-
-/// Client message.
-pub const Message = struct {
-    subject: []const u8,
-    reply_to: []const u8,
-    data: []const u8,
-    subscription: Subscription,
-
-    pub fn init(subject: []const u8, reply_to: []const u8, data: []const u8, subscription: Subscription) Message {
-        return Message{ .subject = subject, .reply_to = reply_to, .data = data, .subscription = subscription };
-    }
-    pub fn deinit(self: *Message) void {
-        self.* = undefined;
-    }
-};
+const root = @import("root.zig");
 
 /// Client subscription.
 pub const Subscription = struct {
     sid: u64,
     subject: []const u8,
     queue: []const u8,
-    messages: std.ArrayList(Message),
+    stream: std.net.Stream,
+    allocator: std.mem.Allocator,
 
-    pub fn init(sid: u64, allocator: std.mem.Allocator, subject: []const u8) Subscription {
-        return Subscription{ .sid = sid, .subject = subject, .queue = "", .messages = std.ArrayList(Message).init(allocator) };
+    const CallbackFn = fn (root.ServerMsg) void;
+
+    pub fn init(sid: u64, allocator: std.mem.Allocator, stream: std.net.Stream, subject: []const u8) Subscription {
+        return Subscription{ .sid = sid, .subject = subject, .queue = "", .allocator = allocator, .stream = stream };
     }
+
     pub fn deinit(self: *Subscription) void {
         self.* = undefined;
     }
-    pub fn next(self: *Subscription) ?Message {
-        if (self.messages.items.len == 0) return null;
-        return self.messages.pop();
+
+    pub fn call(self: *Subscription, callback: CallbackFn) !void {
+        const ops = try root.readMsg(self.allocator, self.stream);
+
+        const msg = try root.parseServerMsg(ops);
+        callback(msg);
+        try self.call(callback);
+    }
+
+    pub fn next(self: *Subscription) !root.ServerMsg {
+        const ops = try root.readMsg(self.allocator, self.stream);
+
+        return try root.parseServerMsg(ops);
     }
 };
