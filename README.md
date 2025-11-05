@@ -7,4 +7,15 @@ NATS Streaming Client for Zig.
 
 > [!WARNING]
 > This project is currently WIP and is no where near ready for production use.
-> In fact, it's barely initialised as of rn.
+
+Todo
+
++ [x] parse msgs and ops
++ [x] basic pub/sub
++ [ ] unsub
++ [ ] reconnect
++ [ ] consolidate error handling
++ [ ] drain and close (elegantly)
++ [ ] reply/request
++ [ ] tls
++ [ ] jetstream
