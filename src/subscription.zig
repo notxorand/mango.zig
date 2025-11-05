@@ -35,6 +35,7 @@ pub const Subscription = struct {
     }
 
     fn readAndCallback(self: *Subscription, callback: CallbackFn, connection: ?root.Connection) !void {
+        // TODO: peek before consuming in order to avoid consuming other's messages
         const ops = try root.readMsg(self.allocator, self.stream);
 
         const msg = try root.parseServerMsg(ops);
@@ -44,6 +45,7 @@ pub const Subscription = struct {
 
     /// Poll for the next message received on the subscription.
     pub fn next(self: *Subscription) !root.ServerMsg {
+        // TODO: peek before consuming in order to avoid consuming other's messages
         const ops = try root.readMsg(self.allocator, self.stream);
 
         return try root.parseServerMsg(ops);

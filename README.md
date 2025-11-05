@@ -12,7 +12,7 @@ Todo
 
 + [x] parse msgs and ops
 + [x] basic pub/sub
-+ [ ] unsub
++ [x] unsub
 + [ ] reconnect
 + [ ] consolidate error handling
 + [ ] drain and close (elegantly)

@@ -38,7 +38,8 @@ pub fn newConnection(url: []const u8) !std.net.Stream {
 pub const Connection = struct {
     allocator: std.mem.Allocator,
     stream: std.net.Stream,
-    subscriptions: std.HashMap(u64, Subscription, void, 16),
+    subscriptions: std.AutoHashMap(u64, Subscription),
+    next_sid: u64,
     connected: bool,
     server_info: ServerInfo,
     options: ConnectionOptions,
@@ -47,7 +48,8 @@ pub const Connection = struct {
         return Connection{
             .allocator = allocator,
             .stream = stream,
-            .subscriptions = std.HashMap(u64, Subscription, void, 16).init(allocator),
+            .subscriptions = std.AutoHashMap(u64, Subscription).init(allocator),
+            .next_sid = 0,
             .connected = false,
             .server_info = server_info,
             .options = opts,
@@ -87,8 +89,11 @@ pub const Connection = struct {
         try streamMsg(self.stream, parsed);
     }
 
+    /// Subscribe to a subject.
+    /// Returns a subscription object which can be polled for messages via `.next()` or `.call(callbackFn, ?conn)`.
     pub fn subscribe(self: *Connection, subject: []const u8, queue: ?[]const u8) !Subscription {
-        const msg = ClientOps{ .SUB = .{ .sid = self.server_info.server_id, .subject = subject, .queue = queue } };
+        const sid = try std.fmt.allocPrint(self.allocator, "{d}", .{self.next_sid});
+        const msg = ClientOps{ .SUB = .{ .sid = sid, .subject = subject, .queue = queue } };
         const parsed = try parseClientOps(self.allocator, msg);
         defer self.allocator.free(parsed);
         try streamMsg(self.stream, parsed);
@@ -97,13 +102,29 @@ pub const Connection = struct {
         if (!std.mem.startsWith(u8, ops, "+OK")) {
             return error.ServerFailedToConnect;
         }
+        const subscription = Subscription.init(self.next_sid, self.allocator, self.stream, subject);
+        try self.subscriptions.put(subscription.sid, subscription);
+        self.next_sid += 1;
 
-        return Subscription.init(0, self.allocator, self.stream, subject);
+        return subscription;
     }
 
-    // TODO: do more than this
-    pub fn unsubscribe(self: *Connection, subscription: Subscription) void {
-        self.subscriptions.remove(subscription.id);
+    /// Unsubscribe from a subscription.
+    pub fn unsubscribe(self: *Connection, subscription: Subscription) !void {
+        const removed = self.subscriptions.remove(subscription.sid);
+        if (!removed) {
+            return error.SubscriptionNotFound;
+        }
+
+        const sid = try std.fmt.allocPrint(self.allocator, "{d}", .{subscription.sid});
+        const msg = ClientOps{ .UNSUB = .{ .sid = sid } };
+        const parsed = try parseClientOps(self.allocator, msg);
+        defer self.allocator.free(parsed);
+        try streamMsg(self.stream, parsed);
+        const ops = try readMsg(self.allocator, self.stream);
+        if (!std.mem.startsWith(u8, ops, "+OK")) {
+            return error.ServerFailedToConnect;
+        }
     }
 };
 
