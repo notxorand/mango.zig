@@ -54,6 +54,8 @@ pub const Connection = struct {
         };
     }
 
+    /// Ping server for liveness.
+    /// Returns an error if the server is not responding.
     pub fn ping(self: *Connection) !void {
         const msg = ClientOps.PING;
         const parsed = try parseClientOps(self.allocator, msg);
@@ -64,6 +66,8 @@ pub const Connection = struct {
         }
     }
 
+    /// Publish a message to a subject.
+    /// Returns an error if the server is not responding.
     pub fn publish(self: *Connection, subject: []const u8, payload: ?[]const u8) !void {
         const msg = ClientOps{ .PUB = .{ .subject = subject, .payload = payload } };
         const parsed = try parseClientOps(self.allocator, msg);
@@ -238,6 +242,7 @@ pub const ServerInfo = struct {
     xkey: ?[]const u8 = null,
 };
 
+/// Server message.
 pub const ServerMsg = struct {
     subject: []const u8 = "",
     sid: []const u8 = "",
