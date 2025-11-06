@@ -14,8 +14,8 @@ Todo
 + [x] basic pub/sub
 + [x] unsub
 + [ ] reconnect
-+ [ ] consolidate error handling
++ [x] consolidate error handling
 + [ ] drain and close (elegantly)
 + [ ] reply/request
-+ [ ] tls
++ [ ] tls (in-progress)
 + [ ] jetstream

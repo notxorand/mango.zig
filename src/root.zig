@@ -19,7 +19,7 @@ pub const Client = struct {
         var connections: std.ArrayList(Connection) = .empty;
         defer connections.deinit(self.allocator);
 
-        const stream = try newConnection(url);
+        const stream = try newConnection(self.allocator, url);
         const server_info = try startHandshake(self.allocator, stream, self.options);
         return Connection.init(self.allocator, stream, self.options, server_info);
     }
@@ -29,9 +29,9 @@ pub const Client = struct {
     }
 };
 
-pub fn newConnection(url: []const u8) !std.net.Stream {
-    const addr = try std.net.Address.parseIpAndPort(url);
-    return try std.net.tcpConnectToAddress(addr);
+pub fn newConnection(allocator: std.mem.Allocator, url: []const u8) !std.net.Stream {
+    const uri = try std.Uri.parse(url);
+    return try std.net.tcpConnectToHost(allocator, uri.host.?.percent_encoded, uri.port.?);
 }
 
 /// Connection to a NATS server.
@@ -77,8 +77,8 @@ pub const Connection = struct {
         try streamMsg(self.stream, parsed);
 
         const ops = try readMsg(self.allocator, self.stream);
-        if (!std.mem.startsWith(u8, ops, "+OK")) {
-            return error.ServerFailedToConnect;
+        if (!std.mem.startsWith(u8, ops, "+OK") and std.mem.startsWith(u8, ops, "-ERR")) {
+            return parseServerError(ops);
         }
     }
 
@@ -99,8 +99,8 @@ pub const Connection = struct {
         try streamMsg(self.stream, parsed);
 
         const ops = try readMsg(self.allocator, self.stream);
-        if (!std.mem.startsWith(u8, ops, "+OK")) {
-            return error.ServerFailedToConnect;
+        if (!std.mem.startsWith(u8, ops, "+OK") and std.mem.startsWith(u8, ops, "-ERR")) {
+            return parseServerError(ops);
         }
         const subscription = Subscription.init(self.next_sid, self.allocator, self.stream, subject);
         try self.subscriptions.put(subscription.sid, subscription);
@@ -122,8 +122,8 @@ pub const Connection = struct {
         defer self.allocator.free(parsed);
         try streamMsg(self.stream, parsed);
         const ops = try readMsg(self.allocator, self.stream);
-        if (!std.mem.startsWith(u8, ops, "+OK")) {
-            return error.ServerFailedToConnect;
+        if (!std.mem.startsWith(u8, ops, "+OK") and std.mem.startsWith(u8, ops, "-ERR")) {
+            return parseServerError(ops);
         }
     }
 };
@@ -261,6 +261,7 @@ pub const ServerInfo = struct {
     cluster: ?[]const u8 = null,
     domain: ?[]const u8 = null,
     xkey: ?[]const u8 = null,
+    api_lvl: ?u32 = null,
 };
 
 /// Server message.
@@ -282,10 +283,9 @@ pub const ServerOps = union(enum) {
     PING,
     PONG,
     OK,
-    ERROR: ServerError,
 };
 
-fn parseServerOps(allocator: std.mem.Allocator, ops: []const u8) !ServerOps {
+fn parseServerOps(allocator: std.mem.Allocator, ops: []const u8) anyerror!ServerOps {
     if (std.mem.startsWith(u8, ops, "INFO")) {
         const parse_info = try parseServerInfo(allocator, ops);
         defer parse_info.deinit();
@@ -296,7 +296,7 @@ fn parseServerOps(allocator: std.mem.Allocator, ops: []const u8) !ServerOps {
     if (std.mem.startsWith(u8, ops, "PING")) return ServerOps.PING;
     if (std.mem.startsWith(u8, ops, "PONG")) return ServerOps.PONG;
     if (std.mem.startsWith(u8, ops, "+OK")) return ServerOps.OK;
-    if (std.mem.startsWith(u8, ops, "-ERROR")) return .{ .ERROR = try parseServerError(ops) };
+    if (std.mem.startsWith(u8, ops, "-ERROR")) return parseServerError(ops);
 
     return error.UnknownOp;
 }
@@ -351,51 +351,51 @@ pub fn parseServerMsg(ops: []const u8) !ServerMsg {
 /// NATS protocol errors.
 ///
 /// See: https://docs.nats.io/reference/reference-protocols/nats-protocol#ok-err
-pub const ServerError = enum {
+pub const ServerError = error{
     // Connection invalid, clean-up client
-    UNKNOWN_PROTOCOL_OPERATION,
-    ATTEMPTED_TO_CONNECT_TO_ROUTE_PORT,
-    AUTHORIZATION_VIOLATION,
-    AUTHORIZATION_TIMEOUT,
-    INVALID_CLIENT_PROTOCOL,
-    MAXIMUM_CONTROL_LINE_EXCEEDED,
-    PARSER_ERROR,
-    SECURE_CONNECTION_TLS_REQUIRED,
-    STALE_CONNECTION,
-    MAXIMUM_CONNECTIONS_EXCEEDED,
-    SLOW_CONSUMER,
-    MAXIMUM_PAYLOAD_VIOLATION,
+    UnknownProtocolOperation,
+    AttemptedToConnectToRoutePort,
+    AuthorizationViolation,
+    AuthorizationTimeout,
+    InvalidClientProtocol,
+    MaximumControlLineExceeded,
+    ParserError,
+    SecureConnectionTlsRequired,
+    StaleConnection,
+    MaximumConnectionsExceeded,
+    SlowConsumer,
+    MaximumPayloadViolation,
     // Keep connection open
-    INVALID_SUBJECT,
-    PERMISSIONS_VIOLATION_FOR_SUBSCRIPTION_TO_SUBJECT,
-    PERMISSIONS_VIOLATION_FOR_PUBLISH_TO_SUBJECT,
+    InvalidSubject,
+    PermissionsViolationForSubscriptionToSubject,
+    PermissionsViolationForPublishToSubject,
     // Edge case
-    UNKNOWN_ERROR,
+    UnknownError,
 };
 
-fn parseServerError(err: []const u8) !ServerError {
+fn parseServerError(err: []const u8) anyerror {
     const index = std.mem.indexOf(u8, err, " ").?;
     const err_start = index + 1;
     const err_end = std.mem.indexOf(u8, err[err_start..], "\r\n") orelse err.len - err_start;
     const dirty_str = err[err_start..][0..err_end];
     const err_str = if (std.mem.startsWith(u8, dirty_str, "'")) dirty_str[1 .. dirty_str.len - 1] else dirty_str;
     // use ServerError Enum
-    if (std.mem.eql(u8, err_str, "Unknown Protocol Operation")) return ServerError.UNKNOWN_PROTOCOL_OPERATION;
-    if (std.mem.eql(u8, err_str, "Attempted To Connect To Route Port")) return ServerError.ATTEMPTED_TO_CONNECT_TO_ROUTE_PORT;
-    if (std.mem.eql(u8, err_str, "Authorization Violation")) return ServerError.AUTHORIZATION_VIOLATION;
-    if (std.mem.eql(u8, err_str, "Authorization Timeout")) return ServerError.AUTHORIZATION_TIMEOUT;
-    if (std.mem.eql(u8, err_str, "Invalid Client Protocol")) return ServerError.INVALID_CLIENT_PROTOCOL;
-    if (std.mem.eql(u8, err_str, "Maximum Control Line Exceeded")) return ServerError.MAXIMUM_CONTROL_LINE_EXCEEDED;
-    if (std.mem.eql(u8, err_str, "Parser Error")) return ServerError.PARSER_ERROR;
-    if (std.mem.eql(u8, err_str, "Secure Connection TLS Required")) return ServerError.SECURE_CONNECTION_TLS_REQUIRED;
-    if (std.mem.eql(u8, err_str, "Stale Connection")) return ServerError.STALE_CONNECTION;
-    if (std.mem.eql(u8, err_str, "Maximum Connections Exceeded")) return ServerError.MAXIMUM_CONNECTIONS_EXCEEDED;
-    if (std.mem.eql(u8, err_str, "Slow Consumer Detected")) return ServerError.SLOW_CONSUMER;
-    if (std.mem.eql(u8, err_str, "Maximum Payload Exceeded")) return ServerError.MAXIMUM_PAYLOAD_VIOLATION;
-    if (std.mem.eql(u8, err_str, "Invalid Subject")) return ServerError.INVALID_SUBJECT;
-    if (std.mem.eql(u8, err_str, "Permissions Violation For Subscription To Subject")) return ServerError.PERMISSIONS_VIOLATION_FOR_SUBSCRIPTION_TO_SUBJECT;
-    if (std.mem.eql(u8, err_str, "Permissions Violation For Publish To Subject")) return ServerError.PERMISSIONS_VIOLATION_FOR_PUBLISH_TO_SUBJECT;
-    return ServerError.UNKNOWN_ERROR;
+    if (std.mem.eql(u8, err_str, "Unknown Protocol Operation")) return ServerError.UnknownProtocolOperation;
+    if (std.mem.eql(u8, err_str, "Attempted To Connect To Route Port")) return ServerError.AttemptedToConnectToRoutePort;
+    if (std.mem.eql(u8, err_str, "Authorization Violation")) return ServerError.AuthorizationViolation;
+    if (std.mem.eql(u8, err_str, "Authorization Timeout")) return ServerError.AuthorizationTimeout;
+    if (std.mem.eql(u8, err_str, "Invalid Client Protocol")) return ServerError.InvalidClientProtocol;
+    if (std.mem.eql(u8, err_str, "Maximum Control Line Exceeded")) return ServerError.MaximumControlLineExceeded;
+    if (std.mem.eql(u8, err_str, "Parser Error")) return ServerError.ParserError;
+    if (std.mem.eql(u8, err_str, "Secure Connection TLS Required")) return ServerError.SecureConnectionTlsRequired;
+    if (std.mem.eql(u8, err_str, "Stale Connection")) return ServerError.StaleConnection;
+    if (std.mem.eql(u8, err_str, "Maximum Connections Exceeded")) return ServerError.MaximumConnectionsExceeded;
+    if (std.mem.eql(u8, err_str, "Slow Consumer Detected")) return ServerError.SlowConsumer;
+    if (std.mem.eql(u8, err_str, "Maximum Payload Violation")) return ServerError.MaximumPayloadViolation;
+    if (std.mem.eql(u8, err_str, "Invalid Subject")) return ServerError.InvalidSubject;
+    if (std.mem.eql(u8, err_str, "Permissions Violation For Subscription To Subject")) return ServerError.PermissionsViolationForSubscriptionToSubject;
+    if (std.mem.eql(u8, err_str, "Permissions Violation For Publish To Subject")) return ServerError.PermissionsViolationForPublishToSubject;
+    return ServerError.UnknownError;
 }
 
 fn streamMsg(stream: std.net.Stream, payload: []const u8) !void {
@@ -441,8 +441,8 @@ fn startHandshake(allocator: std.mem.Allocator, stream: std.net.Stream, opts: Co
     defer info.deinit();
 
     const ops2 = try readMsg(allocator, stream);
-    if (!std.mem.startsWith(u8, ops2, "+OK")) {
-        return error.ServerFailedToConnect;
+    if (!std.mem.startsWith(u8, ops2, "+OK") and std.mem.startsWith(u8, ops2, "-ERR")) {
+        return parseServerError(ops2);
     }
     return info.value;
 }
@@ -525,7 +525,7 @@ test "parse server msg with reply" {
 
 test "parse server error" {
     const err = "-ERR Invalid Subject\r\n";
-    const parsed = try parseServerError(err);
+    const parsed = parseServerError(err);
 
     try std.testing.expectEqual(ServerError.INVALID_SUBJECT, parsed);
 }
